@@ -18,6 +18,9 @@ allowing you to fluidly combine pandas and SQL to solve problems using the most 
 <i><a href="https://join.slack.com/t/xorbitsio/shared_invite/zt-1z3zsm9ep-87yI9YZ_B79HLB2ccTq4WA">👉 Join our Slack community!</a></i>
 </div>
 
+**Xorbits SQL is still at an early development stage and under active improvement. 
+Please feel free to provide feedback if you encounter any issues or have any suggestion.**
+
 ## Key features
 
 🌟 **Pandas and SQL APIs in one**: The popular pandas and SQL APIs now work seamlessly together.
