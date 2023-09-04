@@ -37,7 +37,7 @@ environment to avoid conflicts.
 
 ### Installation
 ```bash
-$ pip install "xorbits_sql"
+$ pip install "xorbits-sql"
 ```
 
 ### Quick Start
