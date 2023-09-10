@@ -109,7 +109,7 @@ def execute(
     logger.debug("Logical Plan: %s", plan)
 
     now = time.time()
-    result = XorbitsExecutor(tables=tables_).execute(plan)
+    result = XorbitsExecutor(tables=tables_, schema=schema).execute(plan)
 
     logger.debug("Query finished: %f", time.time() - now)
 

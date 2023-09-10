@@ -20,7 +20,7 @@ from functools import lru_cache
 import pandas
 import xorbits
 import xorbits.pandas as pd
-from sqlglot import exp, planner
+from sqlglot import MappingSchema, exp, planner
 from xoscar.utils import TypeDispatcher, classproperty
 
 from .errors import ExecuteError, UnsupportedError
@@ -36,19 +36,22 @@ _SQL_AGG_FUNC_TO_PD = {
     exp.Variance: "var",
 }
 
-_SQLGLOT_NUMBER_TO_PD_TYPES = {
-    exp.DataType.Type.FLOAT: pandas.Float32Dtype,
-    exp.DataType.Type.DOUBLE: pandas.Float64Dtype,
-    exp.DataType.Type.INT: pandas.Int32Dtype,
-    exp.DataType.Type.TINYINT: pandas.Int8Dtype,
-    exp.DataType.Type.SMALLINT: pandas.Int16Dtype,
-    exp.DataType.Type.BIGINT: pandas.Int64Dtype,
+_SQLGLOT_TYPE_TO_DTYPE = {
+    "float": "float32",
+    "double": "float64",
+    "int": "int32",
+    "tinyint": "int8",
+    "smallint": "int16",
+    "bigint": "int64",
 }
 
 
 class XorbitsExecutor:
-    def __init__(self, tables: Tables | None = None):
+    def __init__(
+        self, tables: Tables | None = None, schema: MappingSchema | None = None
+    ):
         self.tables = tables or Tables()
+        self.schema = schema
 
     @classproperty
     @lru_cache(1)
@@ -119,10 +122,10 @@ class XorbitsExecutor:
                 return str(this)
             else:
                 return this.astype(pandas.StringDtype("pyarrow"))
-        elif to in _SQLGLOT_NUMBER_TO_PD_TYPES:
-            pd_type = _SQLGLOT_NUMBER_TO_PD_TYPES[to]()
+        elif str(cast.to) in _SQLGLOT_TYPE_TO_DTYPE:
+            pd_type = _SQLGLOT_TYPE_TO_DTYPE[str(cast.to)]
             if pandas.api.types.is_scalar(this):
-                return pd_type.type(this)
+                return pandas.Series([this], dtype=pd_type)[0]
             else:
                 return this.astype(pd_type)
         else:
@@ -250,7 +253,16 @@ class XorbitsExecutor:
         return {step.name: self._project_and_filter(step, context, df)}
 
     @staticmethod
-    def _scan_csv(step: planner.Scan) -> dict[str, pd.DataFrame]:
+    def _schema_to_dtype(schema: dict[str, str]) -> dict[str, str]:
+        result = dict()
+        for name, type_name in schema.items():
+            try:
+                result[name] = _SQLGLOT_TYPE_TO_DTYPE[type_name.lower()]
+            except KeyError:
+                continue
+        return result
+
+    def _scan_csv(self, step: planner.Scan) -> dict[str, pd.DataFrame]:
         alias = step.source.alias
         source: exp.ReadCSV = step.source.this
 
@@ -263,7 +275,11 @@ class XorbitsExecutor:
             if k == "delimiter":
                 delimiter = v
 
-        df = pd.read_csv(filename, sep=delimiter)
+        dtype = None
+        if self.schema and alias in self.schema.mapping:
+            dtype = self._schema_to_dtype(self.schema.mapping[alias])
+
+        df = pd.read_csv(filename, sep=delimiter, dtype=dtype)
         return {alias: df}
 
     def _project_and_filter(
@@ -457,6 +473,9 @@ class XorbitsExecutor:
 
         if isinstance(step.limit, int):
             df = df.iloc[: step.limit]
+
+        projection_columns = [p.alias_or_name for p in step.projections]
+        df = df.loc[:, projection_columns]
 
         return {step.name: df}
 
