@@ -36,6 +36,15 @@ _SQL_AGG_FUNC_TO_PD = {
     exp.Variance: "var",
 }
 
+_SQLGLOT_NUMBER_TO_PD_TYPES = {
+    exp.DataType.Type.FLOAT: pandas.Float32Dtype,
+    exp.DataType.Type.DOUBLE: pandas.Float64Dtype,
+    exp.DataType.Type.INT: pandas.Int32Dtype,
+    exp.DataType.Type.TINYINT: pandas.Int8Dtype,
+    exp.DataType.Type.SMALLINT: pandas.Int16Dtype,
+    exp.DataType.Type.BIGINT: pandas.Int64Dtype,
+}
+
 
 class XorbitsExecutor:
     def __init__(self, tables: Tables | None = None):
@@ -45,14 +54,16 @@ class XorbitsExecutor:
     @lru_cache(1)
     def _exp_visitors(cls) -> TypeDispatcher:
         dispatcher = TypeDispatcher()
+        for func in exp.ALL_FUNCTIONS:
+            dispatcher.register(func, cls._func)
         dispatcher.register(exp.Alias, cls._alias)
         dispatcher.register(exp.Binary, cls._func)
         dispatcher.register(exp.Boolean, cls._boolean)
+        dispatcher.register(exp.Cast, cls._cast)
         dispatcher.register(exp.Column, cls._column)
         dispatcher.register(exp.Literal, cls._literal)
         dispatcher.register(exp.Ordered, cls._ordered)
-        for func in exp.ALL_FUNCTIONS:
-            dispatcher.register(func, cls._func)
+        dispatcher.register(exp.Paren, cls._paren)
         return dispatcher
 
     @classmethod
@@ -74,7 +85,7 @@ class XorbitsExecutor:
         elif literal.is_int:
             return int(literal.this)
         elif literal.is_star:
-            return ...
+            return slice(None)
         else:
             return float(literal.this)
 
@@ -82,13 +93,60 @@ class XorbitsExecutor:
     def _boolean(boolean: exp.Boolean, context: dict[str, pd.DataFrame]):
         return True if boolean.this else False
 
+    @classmethod
+    def _cast(
+        cls,
+        cast: exp.Cast,
+        context: dict[str, pd.DataFrame],
+    ):
+        this = cls._visit_exp(cast.this, context)
+        to = getattr(exp.DataType.Type, str(cast.to))
+
+        if to == exp.DataType.Type.DATE:
+            if pandas.api.types.is_scalar(this):
+                return pandas.to_datetime(this).to_pydatetime().date()
+            else:
+                return pd.to_datetime(this).dt.date
+        elif to in (exp.DataType.Type.DATETIME, exp.DataType.Type.TIMESTAMP):
+            return pd.to_datetime(this)
+        elif to == exp.DataType.Type.BOOLEAN:
+            if pandas.api.types.is_scalar(this):
+                return bool(this)
+            else:
+                return this.astype(pandas.BooleanDtype())
+        elif to in exp.DataType.TEXT_TYPES:
+            if pandas.api.types.is_scalar(this):
+                return str(this)
+            else:
+                return this.astype(pandas.StringDtype("pyarrow"))
+        elif to in _SQLGLOT_NUMBER_TO_PD_TYPES:
+            pd_type = _SQLGLOT_NUMBER_TO_PD_TYPES[to]()
+            if pandas.api.types.is_scalar(this):
+                return pd_type.type(this)
+            else:
+                return this.astype(pd_type)
+        else:
+            raise NotImplementedError(f"Casting {cast.this} to '{to}' not implemented.")
+
     @staticmethod
     def _column(column: exp.Column, context: dict[str, pd.DataFrame]) -> pd.Series:
         return context[column.table][column.name]
 
     @classmethod
-    def _alias(cls, alias: exp.Alias, context: dict[str, pd.DataFrame]) -> pd.Series:
+    def _alias(
+        cls,
+        alias: exp.Alias,
+        context: dict[str, pd.DataFrame],
+    ) -> pd.Series:
         return cls._visit_exp(alias.this, context).rename(alias.output_name)
+
+    @classmethod
+    def _paren(
+        cls,
+        paren: exp.Paren,
+        context: dict[str, pd.DataFrame],
+    ):
+        return cls._visit_exp(paren.this, context)
 
     @classproperty
     @lru_cache(1)
@@ -198,7 +256,14 @@ class XorbitsExecutor:
 
         args = source.expressions
         filename = source.name
-        df = pd.read_csv(filename, **{arg.name: arg for arg in args})
+
+        delimiter = ","
+        args = iter(arg.name for arg in args)
+        for k, v in zip(args, args):
+            if k == "delimiter":
+                delimiter = v
+
+        df = pd.read_csv(filename, sep=delimiter)
         return {alias: df}
 
     def _project_and_filter(
@@ -226,7 +291,10 @@ class XorbitsExecutor:
 
         if step.operands:
             for op in step.operands:
-                df[op.alias_or_name] = self._visit_exp(op, context)
+                if isinstance(op.this, exp.Star):
+                    df[op.alias_or_name] = 1
+                else:
+                    df[op.alias_or_name] = self._visit_exp(op, context)
 
         aggregations = dict()
         names = list(step.group)
@@ -261,14 +329,14 @@ class XorbitsExecutor:
         source = step.name
         source_df = context[source]
         source_context = {source: source_df}
-        column_slices = {source: slice(0, source_df.shape[1])}
+        column_slices = {source: slice(0, len(source_df.dtypes))}
         df = None
 
         for name, join in step.joins.items():
             df = context[name]
             join_context = {name: df}
             start = max(r.stop for r in column_slices.values())
-            column_slices[name] = slice(start, df.shape[1] + start)
+            column_slices[name] = slice(start, len(df.dtypes) + start)
 
             if join.get("source_key"):
                 df = self._hash_join(join, source_context, join_context)
@@ -365,7 +433,7 @@ class XorbitsExecutor:
         df = next(iter(context.values()))
         for projection in step.projections:
             df[projection.alias_or_name] = self._visit_exp(projection, context)
-        slc = slice(df.shape[1] - len(step.projections), df.shape[1])
+        slc = slice(len(df.dtypes) - len(step.projections), len(df.dtypes))
 
         sort_context = {"": df, **context}
 
