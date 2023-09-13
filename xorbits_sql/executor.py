@@ -165,6 +165,7 @@ class XorbitsExecutor:
         dispatcher.register(exp.LTE, operator.le)
         dispatcher.register(exp.Mul, operator.mul)
         dispatcher.register(exp.NEQ, operator.ne)
+        dispatcher.register(exp.Like, cls._like)
         dispatcher.register(exp.Sub, operator.sub)
         return dispatcher
 
@@ -181,6 +182,11 @@ class XorbitsExecutor:
                 f"Unsupported expression: {func}, type: {type(func)}"
             )
         return func(*values)
+
+    @classmethod
+    def _like(cls, left: pd.Series, right: str):
+        r = right.replace("_", ".").replace("%", ".*")
+        return left.str.contains(r, regex=True, na=True)
 
     def execute(self, plan: planner.Plan) -> pd.DataFrame:
         finished = set()
