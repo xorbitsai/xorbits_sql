@@ -111,6 +111,6 @@ def test_sort(prepare_data):
 
     expected = raw_df.sort_values(by="c", ascending=False)
     expected["b"] *= 5
-    expected = expected.iloc[:10]
+    expected = expected.iloc[:10].reset_index(drop=True)
     result = execute(sql, tables={"t1": xpd.DataFrame(raw_df)}).fetch()
     pd.testing.assert_frame_equal(result, expected)

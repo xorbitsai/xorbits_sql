@@ -306,9 +306,7 @@ class XorbitsExecutor:
     def aggregate(
         self, step: planner.Aggregate, context: dict[str, pd.DataFrame]
     ) -> dict[str, pd.DataFrame]:
-        dfs = list(context.values())
-        assert len(dfs) == 1
-        df = dfs[0]
+        df = context[step.source]
         group_by = [self._visit_exp(g, context) for g in step.group.values()]
 
         if step.operands:
@@ -338,7 +336,9 @@ class XorbitsExecutor:
         result.columns = names
 
         if step.projections or step.condition:
-            result = self._project_and_filter(step, {step.name: result}, result)
+            result = self._project_and_filter(
+                step, {step.name: result, **{name: result for name in context}}, result
+            )
 
         if isinstance(step.limit, int):
             result = result.iloc[: step.limit]
@@ -361,9 +361,9 @@ class XorbitsExecutor:
             column_slices[name] = slice(start, len(df.dtypes) + start)
 
             if join.get("source_key"):
-                df = self._hash_join(join, source_context, join_context)
+                df = self._hash_join(join, source_df, source_context, df, join_context)
             else:
-                df = self._nested_loop_join(join, source_context, join_context)
+                df = self._nested_loop_join(join, source_df, df)
 
             condition = self._visit_exp(join["condition"], {name: df})
             if condition is not True:
@@ -373,6 +373,7 @@ class XorbitsExecutor:
                 name: df.iloc[:, column_slice]
                 for name, column_slice in column_slices.items()
             }
+            source_df = df
 
         if not step.condition and not step.projections:
             return source_context
@@ -382,48 +383,48 @@ class XorbitsExecutor:
         if step.projections:
             return {step.name: sink}
         else:
-            return source_context
+            return {name: sink for name in source_context}
 
     def _nested_loop_join(
         self,
         join: dict,
-        source_context: dict[str, pd.DataFrame],
-        join_context: dict[str, pd.DataFrame],
+        source_df: pd.DataFrame,
+        join_df: pd.DataFrame,
     ) -> pd.DataFrame:
         def func(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
             if pandas.__version__ >= "1.2.0":
-                return left.merge(right, on="cross")
+                return left.merge(right, how="cross")
             else:
                 left["_on"] = 1
                 right["_on"] = 1
                 result = left.merge(right, on="_on")
                 return result[left.dtypes.index.tolist() + right.dtypes.index.tolist()]
 
-        source_df = next(iter(source_context.values()))
-        join_df = next(iter(join_context.values()))
-        return source_df.cartisan_chunk(join_df, func)
+        return source_df.cartesian_chunk(join_df, func)
 
     def _hash_join(
         self,
         join: dict,
+        source_df: pd.DataFrame,
         source_context: dict[str, pd.DataFrame],
+        join_df: pd.DataFrame,
         join_context: dict[str, pd.DataFrame],
     ) -> pd.DataFrame:
         cols = []
 
-        source_df = next(iter(source_context.values()))
+        source_df = pd.DataFrame({c: source_df[c] for c in source_df.dtypes.index})
         cols.extend(source_df.dtypes.index.tolist())
         left_ons = []
         for i, source_key in enumerate(join["source_key"]):
-            col_name = f"_on_{i}"
+            col_name = f"__on_{i}"
             left_ons.append(col_name)
             source_df[col_name] = self._visit_exp(source_key, source_context)
 
-        join_df = next(iter(join_context.values()))
+        join_df = pd.DataFrame({c: join_df[c] for c in join_df.dtypes.index})
         cols.extend(join_df.dtypes.index.tolist())
         right_ons = []
         for i, join_key in enumerate(join["join_key"]):
-            col_name = f"_on_{i}"
+            col_name = f"__on_{i}"
             right_ons.append(col_name)
             join_df[col_name] = self._visit_exp(join_key, join_context)
 
@@ -434,9 +435,12 @@ class XorbitsExecutor:
             how = "right"
 
         result = source_df.merge(join_df, how=how, left_on=left_ons, right_on=right_ons)
-        result = result[
-            [col for col in result.dtypes.index if not col.startswith("_on_")]
+        ilocs = [
+            i
+            for i, col in enumerate(result.dtypes.index)
+            if not col.startswith("__on_")
         ]
+        result = result.iloc[:, ilocs]
         result.columns = cols
         return result
 
@@ -451,11 +455,10 @@ class XorbitsExecutor:
     def sort(
         self, step: planner.Sort, context: dict[str, pd.DataFrame]
     ) -> dict[str, pd.DataFrame]:
-        assert len(context) == 1
-        df = next(iter(context.values()))
+        df = context[step.name]
+        df = pd.DataFrame({n: df[n] for n in df.dtypes.index})
         for projection in step.projections:
             df[projection.alias_or_name] = self._visit_exp(projection, context)
-        slc = slice(len(df.dtypes) - len(step.projections), len(df.dtypes))
 
         sort_context = {"": df, **context}
 
@@ -464,7 +467,7 @@ class XorbitsExecutor:
         ascendings = []
         na_position = None
         for i, (s, descending, cur_na_position) in enumerate(sort):
-            sort_col = f"_s_{i}"
+            sort_col = f"__s_{i}"
             sort_cols.append(sort_col)
             ascendings.append(not descending)
             if na_position is None:
@@ -473,17 +476,13 @@ class XorbitsExecutor:
                 raise NotImplementedError("nulls_first must be same for all sort keys")
             df[sort_col] = s
 
-        df = df.sort_values(
-            by=sort_cols, ascending=ascendings, na_position=na_position
-        ).iloc[:, slc]
+        df = df.sort_values(by=sort_cols, ascending=ascendings, na_position=na_position)
+        df = df[[p.alias_or_name for p in step.projections]]
 
         if isinstance(step.limit, int):
             df = df.iloc[: step.limit]
 
-        projection_columns = [p.alias_or_name for p in step.projections]
-        df = df.loc[:, projection_columns]
-
-        return {step.name: df}
+        return {step.name: df.reset_index(drop=True)}
 
     def set_operation(
         self, step: planner.SetOperation, context: dict[str, pd.DataFrame]
