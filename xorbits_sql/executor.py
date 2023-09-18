@@ -121,7 +121,8 @@ class XorbitsExecutor:
             if pandas.api.types.is_scalar(this):
                 return str(this)
             else:
-                return this.astype(pandas.StringDtype("pyarrow"))
+                # TODO: convert to arrow string when it's default in pandas
+                return this.astype(str)
         elif str(cast.to) in _SQLGLOT_TYPE_TO_DTYPE:
             pd_type = _SQLGLOT_TYPE_TO_DTYPE[str(cast.to)]
             if pandas.api.types.is_scalar(this):
