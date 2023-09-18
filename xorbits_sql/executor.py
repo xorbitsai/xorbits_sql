@@ -116,7 +116,8 @@ class XorbitsExecutor:
             if pandas.api.types.is_scalar(this):
                 return bool(this)
             else:
-                return this.astype(pandas.BooleanDtype())
+                # TODO: convert to arrow string when it's default in pandas
+                return this.astype(bool)
         elif to in exp.DataType.TEXT_TYPES:
             if pandas.api.types.is_scalar(this):
                 return str(this)
