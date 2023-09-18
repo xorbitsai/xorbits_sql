@@ -176,6 +176,7 @@ class XorbitsExecutor:
         dispatcher.register(exp.Mul, operator.mul)
         dispatcher.register(exp.NEQ, operator.ne)
         dispatcher.register(exp.Not, operator.neg)
+        dispatcher.register(exp.Or, operator.or_)
         dispatcher.register(exp.Like, cls._like)
         dispatcher.register(exp.Sub, operator.sub)
         return dispatcher
@@ -351,7 +352,10 @@ class XorbitsExecutor:
             )
 
         if aggregations:
-            result = df.groupby(group_by).agg(**aggregations).reset_index()
+            if step.group:
+                result = df.groupby(group_by).agg(**aggregations).reset_index()
+            else:
+                result = df.agg(**aggregations)
             result.columns = names
         else:
             assert len(group_by) == len(names)
