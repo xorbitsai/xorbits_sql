@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import operator
 from functools import lru_cache
+from typing import Any
 
 import pandas
 import xorbits
@@ -65,6 +66,8 @@ class XorbitsExecutor:
         dispatcher.register(exp.Cast, cls._cast)
         dispatcher.register(exp.Column, cls._column)
         dispatcher.register(exp.Literal, cls._literal)
+        dispatcher.register(exp.Null, cls._null)
+        dispatcher.register(exp.Unary, cls._func)
         dispatcher.register(exp.Ordered, cls._ordered)
         dispatcher.register(exp.Paren, cls._paren)
         return dispatcher
@@ -95,6 +98,10 @@ class XorbitsExecutor:
     @staticmethod
     def _boolean(boolean: exp.Boolean, context: dict[str, pd.DataFrame]):
         return True if boolean.this else False
+
+    @staticmethod
+    def _null(null: exp.Null, context: dict[str, pd.DataFrame]):
+        return None
 
     @classmethod
     def _cast(
@@ -163,10 +170,12 @@ class XorbitsExecutor:
         dispatcher.register(exp.Div, operator.truediv)
         dispatcher.register(exp.GT, operator.gt)
         dispatcher.register(exp.GTE, operator.ge)
+        dispatcher.register(exp.Is, cls._is)
         dispatcher.register(exp.LT, operator.lt)
         dispatcher.register(exp.LTE, operator.le)
         dispatcher.register(exp.Mul, operator.mul)
         dispatcher.register(exp.NEQ, operator.ne)
+        dispatcher.register(exp.Not, operator.neg)
         dispatcher.register(exp.Like, cls._like)
         dispatcher.register(exp.Sub, operator.sub)
         return dispatcher
@@ -189,6 +198,13 @@ class XorbitsExecutor:
     def _like(cls, left: pd.Series, right: str):
         r = right.replace("_", ".").replace("%", ".*")
         return left.str.contains(r, regex=True, na=True)
+
+    @classmethod
+    def _is(cls, left: pd.Series, right: Any):
+        if right is None:
+            return left.isnull()
+        else:
+            return left == right
 
     def execute(self, plan: planner.Plan) -> pd.DataFrame:
         finished = set()
@@ -334,8 +350,12 @@ class XorbitsExecutor:
                 column=agg.this.alias_or_name, aggfunc=aggfunc
             )
 
-        result = df.groupby(group_by).agg(**aggregations).reset_index()
-        result.columns = names
+        if aggregations:
+            result = df.groupby(group_by).agg(**aggregations).reset_index()
+            result.columns = names
+        else:
+            assert len(group_by) == len(names)
+            result = pd.DataFrame(dict(zip(names, group_by))).drop_duplicates()
 
         if step.projections or step.condition:
             result = self._project_and_filter(
