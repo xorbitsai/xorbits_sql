@@ -355,7 +355,7 @@ class XorbitsExecutor:
             if step.group:
                 result = df.groupby(group_by).agg(**aggregations).reset_index()
             else:
-                result = df.agg(**aggregations)
+                result = df.agg(**aggregations).reset_index(drop=True)
             result.columns = names
         else:
             assert len(group_by) == len(names)
