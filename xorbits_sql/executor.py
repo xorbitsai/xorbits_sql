@@ -20,6 +20,7 @@ from typing import Any
 
 import pandas
 import xorbits
+import xorbits.numpy as np
 import xorbits.pandas as pd
 from sqlglot import MappingSchema, exp, planner
 from xoscar.utils import TypeDispatcher, classproperty
@@ -63,6 +64,7 @@ class XorbitsExecutor:
         dispatcher.register(exp.Alias, cls._alias)
         dispatcher.register(exp.Binary, cls._func)
         dispatcher.register(exp.Boolean, cls._boolean)
+        dispatcher.register(exp.Case, cls._case)
         dispatcher.register(exp.Cast, cls._cast)
         dispatcher.register(exp.Column, cls._column)
         dispatcher.register(exp.Extract, cls._extract)
@@ -174,6 +176,33 @@ class XorbitsExecutor:
             return getattr(inp.dt, name.lower()).astype("int64")
         else:
             raise NotImplementedError
+
+    @classmethod
+    def _case(cls, case: exp.Case, context: dict[str, pd.DataFrame]):
+        this = cls._visit_exp(case.this, context) if case.this else None
+        default = case.args.get("default")
+        chain = (
+            cls._visit_exp(default, context)
+            if isinstance(default, exp.Expression)
+            else default
+        )
+
+        for e in reversed(case.args["ifs"]):
+            true = e.args.get("true")
+            true = (
+                cls._visit_exp(true, context)
+                if isinstance(true, exp.Expression)
+                else true
+            )
+            condition = cls._visit_exp(e.this, context)
+            if this is not None:
+                condition = this == condition
+            chain = np.where(condition, true, chain)
+            index = getattr(condition, "index", getattr(true, "index", None))
+            assert index is not None
+            chain = pd.Series(chain, index=index)
+
+        return chain
 
     @classproperty
     @lru_cache(1)
