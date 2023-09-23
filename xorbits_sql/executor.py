@@ -65,11 +65,13 @@ class XorbitsExecutor:
         dispatcher.register(exp.Boolean, cls._boolean)
         dispatcher.register(exp.Cast, cls._cast)
         dispatcher.register(exp.Column, cls._column)
+        dispatcher.register(exp.Extract, cls._extract)
         dispatcher.register(exp.Literal, cls._literal)
         dispatcher.register(exp.Null, cls._null)
         dispatcher.register(exp.Unary, cls._func)
         dispatcher.register(exp.Ordered, cls._ordered)
         dispatcher.register(exp.Paren, cls._paren)
+        dispatcher.register(exp.Var, cls._var)
         return dispatcher
 
     @classmethod
@@ -103,6 +105,10 @@ class XorbitsExecutor:
     def _null(null: exp.Null, context: dict[str, pd.DataFrame]):
         return None
 
+    @staticmethod
+    def _var(var: exp.Var, context: dict[str, pd.DataFrame]):
+        return var.name
+
     @classmethod
     def _cast(
         cls,
@@ -114,9 +120,9 @@ class XorbitsExecutor:
 
         if to == exp.DataType.Type.DATE:
             if pandas.api.types.is_scalar(this):
-                return pandas.to_datetime(this).to_pydatetime().date()
+                return pandas.to_datetime(this).normalize()
             else:
-                return pd.to_datetime(this).dt.date
+                return pd.to_datetime(this).dt.normalize()
         elif to in (exp.DataType.Type.DATETIME, exp.DataType.Type.TIMESTAMP):
             return pd.to_datetime(this)
         elif to == exp.DataType.Type.BOOLEAN:
@@ -159,6 +165,15 @@ class XorbitsExecutor:
         context: dict[str, pd.DataFrame],
     ):
         return cls._visit_exp(paren.this, context)
+
+    @classmethod
+    def _extract(cls, extract: exp.Extract, context: dict[str, pd.DataFrame]):
+        name = cls._visit_exp(extract.this, context)
+        inp = cls._visit_exp(extract.expression, context)
+        if name.upper() in ("YEAR", "MONTH", "DAY"):
+            return getattr(inp.dt, name.lower()).astype("int64")
+        else:
+            raise NotImplementedError
 
     @classproperty
     @lru_cache(1)
@@ -326,7 +341,10 @@ class XorbitsExecutor:
         self, step: planner.Aggregate, context: dict[str, pd.DataFrame]
     ) -> dict[str, pd.DataFrame]:
         df = context[step.source]
-        group_by = [self._visit_exp(g, context) for g in step.group.values()]
+        group_by = [
+            self._visit_exp(g, context).rename(f"__g_{i}")
+            for i, g in enumerate(step.group.values())
+        ]
 
         if step.operands:
             for op in step.operands:
@@ -389,16 +407,21 @@ class XorbitsExecutor:
             if join.get("source_key"):
                 df = self._hash_join(join, source_df, source_context, df, join_context)
             else:
-                df = self._nested_loop_join(join, source_df, df)
-
-            condition = self._visit_exp(join["condition"], {name: df})
-            if condition is not True:
-                df = df.iloc[condition]
+                df = self._nested_loop_join(source_df, df)
 
             source_context = {
                 name: df.iloc[:, column_slice]
                 for name, column_slice in column_slices.items()
             }
+
+            condition = self._visit_exp(join["condition"], source_context)
+            if condition is not True:
+                df = df.iloc[condition]
+                source_context = {
+                    name: df.iloc[:, column_slice]
+                    for name, column_slice in column_slices.items()
+                }
+
             source_df = df
 
         if not step.condition and not step.projections:
@@ -413,18 +436,18 @@ class XorbitsExecutor:
 
     def _nested_loop_join(
         self,
-        join: dict,
         source_df: pd.DataFrame,
         join_df: pd.DataFrame,
     ) -> pd.DataFrame:
         def func(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
             if pandas.__version__ >= "1.2.0":
-                return left.merge(right, how="cross")
+                result = left.merge(right, how="cross")
             else:
                 left["_on"] = 1
                 right["_on"] = 1
                 result = left.merge(right, on="_on")
-                return result[left.dtypes.index.tolist() + right.dtypes.index.tolist()]
+            result.columns = left.dtypes.index.tolist() + right.dtypes.index.tolist()
+            return result
 
         return source_df.cartesian_chunk(join_df, func)
 
