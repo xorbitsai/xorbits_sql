@@ -438,7 +438,7 @@ class XorbitsExecutor:
     ) -> pd.DataFrame:
         cols = []
 
-        source_df = pd.DataFrame({c: source_df[c] for c in source_df.dtypes.index})
+        source_df = source_df.copy()
         cols.extend(source_df.dtypes.index.tolist())
         left_ons = []
         for i, source_key in enumerate(join["source_key"]):
@@ -446,7 +446,7 @@ class XorbitsExecutor:
             left_ons.append(col_name)
             source_df[col_name] = self._visit_exp(source_key, source_context)
 
-        join_df = pd.DataFrame({c: join_df[c] for c in join_df.dtypes.index})
+        join_df = join_df.copy()
         cols.extend(join_df.dtypes.index.tolist())
         right_ons = []
         for i, join_key in enumerate(join["join_key"]):
@@ -482,7 +482,7 @@ class XorbitsExecutor:
         self, step: planner.Sort, context: dict[str, pd.DataFrame]
     ) -> dict[str, pd.DataFrame]:
         df = context[step.name]
-        df = pd.DataFrame({n: df[n] for n in df.dtypes.index})
+        df = df.copy()
         for projection in step.projections:
             df[projection.alias_or_name] = self._visit_exp(projection, context)
 
