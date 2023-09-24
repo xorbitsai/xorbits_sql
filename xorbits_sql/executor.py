@@ -398,7 +398,9 @@ class XorbitsExecutor:
             for p in post_processes:
                 p(result)
             locs = [
-                i for i, n in enumerate(result.dtypes.index) if not n.startswith("__")
+                i
+                for i, n in enumerate(result.dtypes.index)
+                if not n.startswith("__op_") and not n.startswith("__agg_")
             ]
             result = result.iloc[:, locs]
 
