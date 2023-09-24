@@ -14,9 +14,10 @@
 
 from __future__ import annotations
 
+import itertools
 import operator
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable
 
 import pandas
 import xorbits
@@ -72,7 +73,6 @@ class XorbitsExecutor:
         dispatcher.register(exp.Null, cls._null)
         dispatcher.register(exp.Unary, cls._func)
         dispatcher.register(exp.Ordered, cls._ordered)
-        dispatcher.register(exp.Paren, cls._paren)
         dispatcher.register(exp.Var, cls._var)
         return dispatcher
 
@@ -161,14 +161,6 @@ class XorbitsExecutor:
         return cls._visit_exp(alias.this, context).rename(alias.output_name)
 
     @classmethod
-    def _paren(
-        cls,
-        paren: exp.Paren,
-        context: dict[str, pd.DataFrame],
-    ):
-        return cls._visit_exp(paren.this, context)
-
-    @classmethod
     def _extract(cls, extract: exp.Extract, context: dict[str, pd.DataFrame]):
         name = cls._visit_exp(extract.this, context)
         inp = cls._visit_exp(extract.expression, context)
@@ -221,6 +213,7 @@ class XorbitsExecutor:
         dispatcher.register(exp.NEQ, operator.ne)
         dispatcher.register(exp.Not, operator.neg)
         dispatcher.register(exp.Or, operator.or_)
+        dispatcher.register(exp.Paren, lambda x: x)
         dispatcher.register(exp.Like, cls._like)
         dispatcher.register(exp.Sub, operator.sub)
         return dispatcher
@@ -382,31 +375,32 @@ class XorbitsExecutor:
                 else:
                     df[op.alias_or_name] = self._visit_exp(op, context)
 
-        aggregations = dict()
-        names = list(step.group)
+        aggregations: dict[str, pd.NamedAgg] = dict()
+        temp_field_id_gen = itertools.count(1)
+        post_processes: list[Callable] = []
         for agg_alias in step.aggregations:
-            agg = agg_alias.this
-            try:
-                aggfunc = _SQL_AGG_FUNC_TO_PD[type(agg)]
-            except KeyError:
-                raise UnsupportedError(
-                    f"Unsupported aggregate function: {agg}, type: {type(agg)}"
-                )
-            out_name = agg_alias.alias_or_name
-            names.append(out_name)
-            aggregations[out_name] = pd.NamedAgg(
-                column=agg.this.alias_or_name, aggfunc=aggfunc
+            self._process_agg_alias(
+                agg_alias, aggregations, temp_field_id_gen, post_processes
             )
 
+        names = list(step.group)
         if aggregations:
+            names += list(aggregations)
             if step.group:
                 result = df.groupby(group_by).agg(**aggregations).reset_index()
             else:
                 result = df.agg(**aggregations).reset_index(drop=True)
             result.columns = names
         else:
-            assert len(group_by) == len(names)
             result = pd.DataFrame(dict(zip(names, group_by))).drop_duplicates()
+
+        if post_processes:
+            for p in post_processes:
+                p(result)
+            locs = [
+                i for i, n in enumerate(result.dtypes.index) if not n.startswith("__")
+            ]
+            result = result.iloc[:, locs]
 
         if step.projections or step.condition:
             result = self._project_and_filter(
@@ -417,6 +411,74 @@ class XorbitsExecutor:
             result = result.iloc[: step.limit]
 
         return {step.name: result}
+
+    def _process_agg_alias(
+        self,
+        op: exp.Alias,
+        aggregations: dict[str, pandas.NamedAgg],
+        temp_field_id_gen: itertools.count,
+        post_processes: list[Callable],
+    ):
+        agg = op.this
+        out_name = op.alias_or_name
+
+        try:
+            aggfunc = _SQL_AGG_FUNC_TO_PD[type(agg)]
+        except KeyError:
+            # not agg function, check if operator like unary or binary
+            # if so, check args if any is an agg func
+            try:
+                self._process_agg_arg(
+                    agg, aggregations, temp_field_id_gen, out_name, post_processes
+                )
+            except KeyError:
+                raise UnsupportedError(
+                    f"Unsupported aggregate function: {agg}, type: {type(agg)}"
+                )
+        else:
+            aggregations[out_name] = pd.NamedAgg(
+                column=agg.this.alias_or_name, aggfunc=aggfunc
+            )
+
+    def _process_agg_arg(
+        self,
+        op: exp.Unary | exp.Binary,
+        aggregations: dict[str, pandas.NamedAgg],
+        temp_field_id_gen: itertools.count,
+        name: str,
+        post_processes: list[Callable],
+    ):
+        func = self._operator_visitors.get_handler(type(op))
+        args = []
+        for arg in op.args.values():
+            try:
+                aggfunc = _SQL_AGG_FUNC_TO_PD[type(arg)]
+            except KeyError:
+                if isinstance(arg, exp.Literal):
+                    args.append(self._literal(arg, None))  # type: ignore
+                else:
+                    out_name = f"__op_{next(temp_field_id_gen)}"
+                    self._process_agg_arg(
+                        arg, aggregations, temp_field_id_gen, out_name, post_processes
+                    )
+                    args.append(operator.itemgetter(out_name))
+            else:
+                out_name = f"__agg_{next(temp_field_id_gen)}"
+                args.append(operator.itemgetter(out_name))
+                aggregations[out_name] = pd.NamedAgg(
+                    column=arg.this.alias_or_name, aggfunc=aggfunc
+                )
+
+        def post_process(aggregated: pd.DataFrame):
+            new_args = []
+            for arg in args:
+                if callable(arg):
+                    new_args.append(arg(aggregated))
+                else:
+                    new_args.append(arg)
+            aggregated[name] = func(*new_args)
+
+        post_processes.append(post_process)
 
     def join(
         self, step: planner.Join, context: dict[str, pd.DataFrame]
