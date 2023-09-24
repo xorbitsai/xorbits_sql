@@ -69,6 +69,7 @@ class XorbitsExecutor:
         dispatcher.register(exp.Cast, cls._cast)
         dispatcher.register(exp.Column, cls._column)
         dispatcher.register(exp.Extract, cls._extract)
+        dispatcher.register(exp.In, cls._in)
         dispatcher.register(exp.Literal, cls._literal)
         dispatcher.register(exp.Null, cls._null)
         dispatcher.register(exp.Unary, cls._func)
@@ -168,6 +169,12 @@ class XorbitsExecutor:
             return getattr(inp.dt, name.lower()).astype("int64")
         else:
             raise NotImplementedError
+
+    @classmethod
+    def _in(cls, in_: exp.In, context: dict[str, pd.DataFrame]):
+        this = cls._visit_exp(in_.this, context)
+        expressions = {cls._visit_exp(e, context) for e in in_.args.get("expressions")}
+        return this.isin(expressions)
 
     @classmethod
     def _case(cls, case: exp.Case, context: dict[str, pd.DataFrame]):
@@ -414,6 +421,15 @@ class XorbitsExecutor:
 
         return {step.name: result}
 
+    def _ensure_col(
+        self, agg: exp.AggFunc, df: pd.DataFrame, context: dict[str, pd.DataFrame]
+    ) -> str:
+        col = agg.this
+        col_name = col.alias_or_name
+        if col_name not in df.dtypes:
+            df[col_name] = self._visit_exp(col, context)
+        return col_name
+
     def _process_agg_alias(
         self,
         op: exp.Alias,
@@ -446,9 +462,7 @@ class XorbitsExecutor:
                     f"Unsupported aggregate function: {agg}, type: {type(agg)}"
                 )
         else:
-            col = agg.this.alias_or_name
-            if col not in df.dtypes:
-                df[col] = self._visit_exp(agg.this, context)
+            col = self._ensure_col(agg, df, context)
             aggregations[out_name] = pd.NamedAgg(column=col, aggfunc=aggfunc)
 
     def _process_agg_arg(
@@ -484,9 +498,7 @@ class XorbitsExecutor:
             else:
                 out_name = f"__agg_{next(temp_field_id_gen)}"
                 args.append(operator.itemgetter(out_name))
-                col = arg.this.alias_or_name
-                if col not in df.dtypes:
-                    df[col] = self._visit_exp(arg.this, context)
+                col = self._ensure_col(arg, df, context)
                 aggregations[out_name] = pd.NamedAgg(column=col, aggfunc=aggfunc)
 
         def post_process(aggregated: pd.DataFrame):
