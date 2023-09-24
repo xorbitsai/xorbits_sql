@@ -362,7 +362,7 @@ class XorbitsExecutor:
     def aggregate(
         self, step: planner.Aggregate, context: dict[str, pd.DataFrame]
     ) -> dict[str, pd.DataFrame]:
-        df = context[step.source]
+        df = context[step.source].copy()
         group_by = [
             self._visit_exp(g, context).rename(f"__g_{i}")
             for i, g in enumerate(step.group.values())
@@ -380,7 +380,7 @@ class XorbitsExecutor:
         post_processes: list[Callable] = []
         for agg_alias in step.aggregations:
             self._process_agg_alias(
-                agg_alias, aggregations, temp_field_id_gen, post_processes
+                agg_alias, aggregations, df, context, temp_field_id_gen, post_processes
             )
 
         names = list(step.group)
@@ -418,6 +418,8 @@ class XorbitsExecutor:
         self,
         op: exp.Alias,
         aggregations: dict[str, pandas.NamedAgg],
+        df: pd.DataFrame,
+        context: dict[str, pd.DataFrame],
         temp_field_id_gen: itertools.count,
         post_processes: list[Callable],
     ):
@@ -431,21 +433,30 @@ class XorbitsExecutor:
             # if so, check args if any is an agg func
             try:
                 self._process_agg_arg(
-                    agg, aggregations, temp_field_id_gen, out_name, post_processes
+                    agg,
+                    aggregations,
+                    df,
+                    context,
+                    temp_field_id_gen,
+                    out_name,
+                    post_processes,
                 )
             except KeyError:
                 raise UnsupportedError(
                     f"Unsupported aggregate function: {agg}, type: {type(agg)}"
                 )
         else:
-            aggregations[out_name] = pd.NamedAgg(
-                column=agg.this.alias_or_name, aggfunc=aggfunc
-            )
+            col = agg.this.alias_or_name
+            if col not in df.dtypes:
+                df[col] = self._visit_exp(agg.this, context)
+            aggregations[out_name] = pd.NamedAgg(column=col, aggfunc=aggfunc)
 
     def _process_agg_arg(
         self,
         op: exp.Unary | exp.Binary,
         aggregations: dict[str, pandas.NamedAgg],
+        df: pd.DataFrame,
+        context: dict[str, pd.DataFrame],
         temp_field_id_gen: itertools.count,
         name: str,
         post_processes: list[Callable],
@@ -461,15 +472,22 @@ class XorbitsExecutor:
                 else:
                     out_name = f"__op_{next(temp_field_id_gen)}"
                     self._process_agg_arg(
-                        arg, aggregations, temp_field_id_gen, out_name, post_processes
+                        arg,
+                        aggregations,
+                        df,
+                        context,
+                        temp_field_id_gen,
+                        out_name,
+                        post_processes,
                     )
                     args.append(operator.itemgetter(out_name))
             else:
                 out_name = f"__agg_{next(temp_field_id_gen)}"
                 args.append(operator.itemgetter(out_name))
-                aggregations[out_name] = pd.NamedAgg(
-                    column=arg.this.alias_or_name, aggfunc=aggfunc
-                )
+                col = arg.this.alias_or_name
+                if col not in df.dtypes:
+                    df[col] = self._visit_exp(arg.this, context)
+                aggregations[out_name] = pd.NamedAgg(column=col, aggfunc=aggfunc)
 
         def post_process(aggregated: pd.DataFrame):
             new_args = []
