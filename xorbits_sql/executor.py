@@ -31,7 +31,7 @@ from .table import Tables
 
 _SQL_AGG_FUNC_TO_PD = {
     exp.Avg: "mean",
-    exp.Count: "size",
+    exp.Count: "count",
     exp.Max: "max",
     exp.Min: "min",
     exp.Sum: "sum",
