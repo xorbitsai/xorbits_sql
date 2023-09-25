@@ -396,7 +396,9 @@ class XorbitsExecutor:
             if step.group:
                 result = df.groupby(group_by).agg(**aggregations).reset_index()
             else:
-                result = df.agg(**aggregations).reset_index(drop=True)
+                df["__g_0"] = 1
+                result = df.groupby("__g_0").agg(**aggregations).reset_index(drop=True)
+
             result.columns = names
         else:
             result = pd.DataFrame(dict(zip(names, group_by))).drop_duplicates()
