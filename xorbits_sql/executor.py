@@ -242,7 +242,7 @@ class XorbitsExecutor:
     @classmethod
     def _like(cls, left: pd.Series, right: str):
         r = right.replace("_", ".").replace("%", ".*")
-        return left.str.contains(r, regex=True, na=True)
+        return left.str.contains(r, regex=True)
 
     @classmethod
     def _is(cls, left: pd.Series, right: Any):
