@@ -54,7 +54,7 @@ def _to_csv(expression: exp.Expression) -> exp.Expression:
 
 def test_execute_tpc_h(prepare_data):
     conn, sqls = prepare_data
-    for sql, _ in sqls[:14]:
+    for sql, _ in sqls[:15]:
         expected = conn.execute(sql).fetchdf()
         result = execute(
             parse_one(sql, dialect="duckdb").transform(_to_csv).sql(pretty=True),
