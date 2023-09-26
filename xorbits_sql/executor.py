@@ -374,20 +374,33 @@ class XorbitsExecutor:
             self._visit_exp(g, context).rename(f"__g_{i}")
             for i, g in enumerate(step.group.values())
         ]
+        distinct_fields = set()
 
         if step.operands:
             for op in step.operands:
                 if isinstance(op.this, exp.Star):
                     df[op.alias_or_name] = 1
+                elif isinstance(op.this, exp.Distinct):
+                    # process input of distinct
+                    df[op.alias_or_name] = self._visit_exp(
+                        op.this.expressions[0], context
+                    )
+                    distinct_fields.add(op.alias_or_name)
                 else:
-                    df[op.alias_or_name] = self._visit_exp(op, context)
+                    df[op.alias_or_name] = self._visit_exp(op.this, context)
 
         aggregations: dict[str, pd.NamedAgg] = dict()
         temp_field_id_gen = itertools.count(1)
         post_processes: list[Callable] = []
         for agg_alias in step.aggregations:
             self._process_agg_alias(
-                agg_alias, aggregations, df, context, temp_field_id_gen, post_processes
+                agg_alias,
+                aggregations,
+                df,
+                distinct_fields,
+                context,
+                temp_field_id_gen,
+                post_processes,
             )
 
         names = list(step.group)
@@ -432,11 +445,19 @@ class XorbitsExecutor:
             df[col_name] = self._visit_exp(col, context)
         return col_name
 
+    @staticmethod
+    def _get_agg_func(agg: exp.AggFunc, distinct_fields: set[str]):
+        if distinct_fields and agg.this.alias_or_name in distinct_fields:
+            return "nunique"
+        else:
+            return _SQL_AGG_FUNC_TO_PD[type(agg)]
+
     def _process_agg_alias(
         self,
         op: exp.Alias,
         aggregations: dict[str, pandas.NamedAgg],
         df: pd.DataFrame,
+        distinct_fields: set[str],
         context: dict[str, pd.DataFrame],
         temp_field_id_gen: itertools.count,
         post_processes: list[Callable],
@@ -445,7 +466,7 @@ class XorbitsExecutor:
         out_name = op.alias_or_name
 
         try:
-            aggfunc = _SQL_AGG_FUNC_TO_PD[type(agg)]
+            aggfunc = self._get_agg_func(agg, distinct_fields)
         except KeyError:
             # not agg function, check if operator like unary or binary
             # if so, check args if any is an agg func
@@ -454,6 +475,7 @@ class XorbitsExecutor:
                     agg,
                     aggregations,
                     df,
+                    distinct_fields,
                     context,
                     temp_field_id_gen,
                     out_name,
@@ -472,6 +494,7 @@ class XorbitsExecutor:
         op: exp.Unary | exp.Binary,
         aggregations: dict[str, pandas.NamedAgg],
         df: pd.DataFrame,
+        distinct_fields: set[str],
         context: dict[str, pd.DataFrame],
         temp_field_id_gen: itertools.count,
         name: str,
@@ -481,7 +504,7 @@ class XorbitsExecutor:
         args = []
         for arg in op.args.values():
             try:
-                aggfunc = _SQL_AGG_FUNC_TO_PD[type(arg)]
+                aggfunc = self._get_agg_func(arg, distinct_fields)
             except KeyError:
                 if isinstance(arg, exp.Literal):
                     args.append(self._literal(arg, None))  # type: ignore
@@ -491,6 +514,7 @@ class XorbitsExecutor:
                         arg,
                         aggregations,
                         df,
+                        distinct_fields,
                         context,
                         temp_field_id_gen,
                         out_name,
