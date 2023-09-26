@@ -426,6 +426,15 @@ class XorbitsExecutor:
             ]
             result = result.iloc[:, locs]
 
+        if aggregations and not step.group:
+
+            def _ensure_data(data: pandas.DataFrame) -> pandas.DataFrame:
+                if not len(data):
+                    data = type(data)([[None] * len(data.dtypes)], columns=data.columns)
+                return data
+
+            result = result.rechunk({1: len(result.dtypes)}).map_chunk(_ensure_data)
+
         if step.projections or step.condition:
             result = self._project_and_filter(
                 step, {step.name: result, **{name: result for name in context}}, result
