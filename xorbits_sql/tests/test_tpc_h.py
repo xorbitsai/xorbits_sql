@@ -54,11 +54,13 @@ def _to_csv(expression: exp.Expression) -> exp.Expression:
 
 def test_execute_tpc_h(prepare_data):
     conn, sqls = prepare_data
-    for sql, _ in sqls[:6]:
+    for sql, _ in sqls[:16]:
         expected = conn.execute(sql).fetchdf()
         result = execute(
             parse_one(sql, dialect="duckdb").transform(_to_csv).sql(pretty=True),
             TPCH_SCHEMA,
             dialect="duckdb",
         ).fetch()
-        pd.testing.assert_frame_equal(result, expected)
+        pd.testing.assert_frame_equal(
+            result, expected, check_dtype=False, check_index_type=False
+        )

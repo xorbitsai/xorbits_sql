@@ -86,6 +86,7 @@ jobs:
       env:
         MODULE: ${{ matrix.module }}
       run: |
+        pip install -e "git+https://github.com/xorbitsai/xorbits.git@main#subdirectory=python&egg=xorbits"
         pip install cython coverage flaky
         pip install -e ".[dev]"
       working-directory: .
